@@ -1,6 +1,6 @@
 [build]
-  publish = "."
+  publish = "SkinIQ"
 
 [functions]
-  directory = "netlify/functions"
+  directory = "SkinIQ/netlify/functions"
   node_bundler = "esbuild"
