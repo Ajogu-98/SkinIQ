@@ -856,7 +856,7 @@ async function runAnalysis(mode){
   }
   showLoading();startLoadingSteps();
   try{
-    const res=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const data=await res.json();
     if(!res.ok)throw new Error(data.error||`HTTP ${res.status}`);
     hideLoading();renderResults(data);
