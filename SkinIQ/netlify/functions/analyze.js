@@ -1,168 +1,125 @@
-import Anthropic from "@anthropic-ai/sdk";
+exports.handler = async function(event) {
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
+  }
 
-const SYSTEM_PROMPT = `You are a world-class skincare chemist and dermatology safety expert. Your job is to analyze skincare ingredient lists and provide accurate, science-backed safety assessments.
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { statusCode: 500, body: JSON.stringify({ error: 'ANTHROPIC_API_KEY not set in environment variables' }) };
+  }
 
-For every ingredient found, provide a thorough JSON analysis. Use the following safety tiers:
-- "safe": well-tolerated, low concern, backed by strong safety data
-- "caution": use with care — may irritate sensitive skin, potential sensitizer, some conflicting evidence, or requires certain precautions (e.g. use SPF)
-- "flag": significant concern — known allergen, endocrine disruptor, banned in major regions (EU/UK/Japan), carcinogen, or strong irritant
+  let body;
+  try { body = JSON.parse(event.body); }
+  catch { return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON body' }) }; }
 
-Return ONLY a valid JSON object — no markdown, no explanation, no code fences. Structure:
+  const { mode, content, mimeType } = body;
+  if (!mode || !content) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'Missing mode or content' }) };
+  }
+
+  // Build message content
+  let userMessage;
+  if (mode === 'image') {
+    userMessage = [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: content }
+      },
+      {
+        type: 'text',
+        text: 'Please read the ingredient list from this skincare product label image and analyze each ingredient. Extract all ingredients you can see, then analyze them.'
+      }
+    ];
+  } else {
+    const isProductName = content.trim().split(/[\n,]/).length <= 3 && content.trim().length < 80;
+    userMessage = isProductName
+      ? `Analyze the ingredients in this skincare product: "${content}". If you know this product, list and analyze its ingredients.`
+      : `Analyze these skincare ingredients:\n\n${content}`;
+  }
+
+  const systemPrompt = `You are an expert skincare chemist and ingredient safety analyst. Analyze skincare ingredients and return ONLY a valid JSON object with no extra text, markdown, or code blocks.
+
+Return this exact JSON structure:
 {
   "productName": "string or null",
-  "extractedIngredientText": "the raw ingredient list as extracted",
+  "extractedIngredientText": "raw ingredient list as string",
   "ingredients": [
     {
-      "name": "common name (string)",
-      "inci": "INCI / scientific name (string)",
-      "safety": "safe | caution | flag",
-      "category": ["array of categories e.g. Humectant, Preservative, Sunscreen, Fragrance, Emollient, Exfoliant, Antioxidant, Retinoid, Surfactant, Emulsifier, Colorant, Occlusive, Anti-acne, Brightener, Soothing, Anti-aging, Vitamin, Mineral"],
-      "description": "2–3 sentence explanation of what this ingredient is and what it does in skincare",
-      "benefits": ["array of specific benefits"],
-      "concerns": ["array of specific concerns, or empty array if none"],
+      "name": "Common name",
+      "inci": "INCI/scientific name",
+      "safety": "safe|caution|flag",
+      "category": ["array", "of", "categories"],
+      "description": "Brief description of what this ingredient is and does",
+      "benefits": ["benefit 1", "benefit 2"],
+      "concerns": ["concern 1", "concern 2"],
       "comedogenic": 0,
       "pregnancySafe": true,
-      "bannedRegions": ["array of regions where restricted/banned e.g. EU, UK, Japan, Hawaii, California"],
+      "bannedRegions": [],
       "ewgScore": 1
     }
   ],
   "summary": {
-    "overallSafety": "safe | caution | flag",
+    "overallSafety": "safe|caution|flag",
     "safeCount": 0,
     "cautionCount": 0,
     "flagCount": 0,
-    "topConcerns": ["top 2-3 concerns as short strings"],
-    "skinTypeNotes": "1–2 sentences about suitability across skin types",
-    "pregnancyNote": "1 sentence about pregnancy safety"
+    "topConcerns": ["concern 1", "concern 2"],
+    "skinTypeNotes": "Notes about which skin types this is suitable for",
+    "pregnancyNote": "Overall pregnancy safety note"
   }
 }
 
-comedogenic scale: 0 = won't clog pores, 5 = highly comedogenic
-ewgScore: 1 (low hazard) to 10 (high hazard) per EWG Skin Deep database norms
-pregnancySafe: true / false / null (if unknown)`;
+Safety ratings:
+- safe: Generally recognized as safe, well-studied
+- caution: Some concerns, use with awareness (e.g. retinol, acids, fragrance)
+- flag: Known irritants, allergens, banned in some regions, or controversial (e.g. parabens, oxybenzone, formaldehyde releasers)
 
-export default async (req) => {
-  if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
-  }
+comedogenic: 0-5 scale (0=non-comedogenic, 5=highly comedogenic)
+ewgScore: 1-10 (1=safest, 10=highest concern)
+pregnancySafe: true, false, or null if unknown
 
-  let body;
-  try {
-    body = await req.json();
-  } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const { mode, content, mimeType } = body;
-
-  if (!mode || !content) {
-    return new Response(JSON.stringify({ error: "Missing required fields: mode, content" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const apiKey = Netlify.env.get("ANTHROPIC_API_KEY");
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: "API key not configured" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const client = new Anthropic({ apiKey });
-
-  let messages = [];
-
-  if (mode === "image") {
-    messages = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: mimeType || "image/jpeg",
-              data: content,
-            },
-          },
-          {
-            type: "text",
-            text: `Extract the complete ingredient list from this product label image. 
-Then analyze EVERY ingredient found for safety, benefits, and concerns.
-If you can identify the product name/brand, include it.
-Return the full structured JSON analysis as specified.`,
-          },
-        ],
-      },
-    ];
-  } else if (mode === "product") {
-    messages = [
-      {
-        role: "user",
-        content: `Analyze this skincare product: "${content}"
-
-If you recognize this as a specific product (e.g. "CeraVe Moisturizing Cream"), use its known ingredient list.
-If it's a product type (e.g. "basic moisturizer"), analyze typical ingredients for that category.
-Set "productName" to the product name if identifiable.
-Return the full structured JSON analysis.`,
-      },
-    ];
-  } else {
-    // mode === "text"
-    messages = [
-      {
-        role: "user",
-        content: `Analyze this skincare input: "${content}"
-
-IMPORTANT:
-- If this looks like a product name or brand (e.g. "The Ordinary Niacinamide 10%"), identify it and use its known ingredient list. Set "productName" accordingly.
-- If this is already an ingredient list (separated by commas, newlines, slashes, or bullets), parse and analyze those exact ingredients. Set "productName" to null.
-
-Analyze EVERY ingredient found and return the full structured JSON analysis.`,
-      },
-    ];
-  }
+Return ONLY the JSON. No explanation, no markdown, no code fences.`;
 
   try {
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      messages,
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-5',
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }]
+      })
     });
 
-    const rawText = response.content[0].text;
-
-    // Parse JSON — strip any accidental markdown fences
-    const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error("Could not extract JSON from Claude response");
+    if (!response.ok) {
+      const err = await response.text();
+      return { statusCode: 500, body: JSON.stringify({ error: `Anthropic API error: ${err}` }) };
     }
 
-    const analysis = JSON.parse(jsonMatch[0]);
+    const data = await response.json();
+    const text = data.content[0].text.trim();
 
-    return new Response(JSON.stringify(analysis), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    // Strip any accidental markdown code fences
+    const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    let parsed;
+    try { parsed = JSON.parse(clean); }
+    catch {
+      return { statusCode: 500, body: JSON.stringify({ error: 'Failed to parse AI response as JSON', raw: clean.slice(0, 500) }) };
+    }
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify(parsed)
+    };
+
   } catch (err) {
-    console.error("Analysis error:", err);
-    return new Response(
-      JSON.stringify({ error: "Analysis failed", details: err.message }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
-};
-
-export const config = {
-  path: "/api/analyze",
 };
