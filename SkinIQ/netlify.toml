@@ -9,15 +9,3 @@
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
-```
-4. Click **Commit changes**
-
-**Fix 2 — `index.html`**
-1. Click on `index.html` → click the **pencil icon**
-2. Press **Ctrl+F** to search for:
-```
-/api/analyze
-```
-3. Replace it with:
-```
-/.netlify/functions/analyze
